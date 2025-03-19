@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSINT Dashboard</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const API_URL = 'http://127.0.0.1'; // Adjust to your Flask server URL
+
+        function App() {
+            const [isLoggedIn, setIsLoggedIn] = React.useState(!!localStorage.getItem('token'));
+            const [username, setUsername] = React.useState('');
+            const [password, setPassword] = React.useState('');
+            const [csrfToken, setCsrfToken] = React.useState('');
+            const [health, setHealth] = React.useState(null);
+            const [agents, setAgents] = React.useState([]);
+            const [jobs, setJobs] = React.useState([]);
+            const [error, setError] = React.useState('');
+            const [agentId, setAgentId] = React.useState('');
+            const [tool, setTool] = React.useState('');
+            const [parameters, setParameters] = React.useState({});
+            const [paramKey, setParamKey] = React.useState('');
+            const [paramValue, setParamValue] = React.useState('');
+
+            React.useEffect(() => {
+                if (isLoggedIn) {
+                    fetchDashboardData();
+                    const interval = setInterval(fetchDashboardData, 30000); // Auto-refresh every 30s
+                    return () => clearInterval(interval);
+                }
+            }, [isLoggedIn]);
+
+            async function fetchWithAuth(url, options = {}) {
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    setIsLoggedIn(false);
+                    return null;
+                }
+                options.headers = {
+                    ...options.headers,
+                    'Authorization': `Bearer ${token}`
+                };
+                const response = await fetch(url, options);
+                if (response.status === 401) {
+                    setIsLoggedIn(false);
+                    localStorage.removeItem('token');
+                    return null;
+                }
+                return response.json();
+            }
+
+            async function getCsrfToken() {
+                const data = await fetchWithAuth(`${API_URL}/csrf-token`);
+                if (data && data.status === 'success') {
+                    setCsrfToken(data.csrf_token);
+                    return data.csrf_token;
+                }
+                return null;
+            }
+
+            async function fetchDashboardData() {
+                const healthData = await fetchWithAuth(`${API_URL}/health`);
+                if (healthData) setHealth(healthData);
+
+                const agentsData = await fetchWithAuth(`${API_URL}/api/agents`);
+                if (agentsData && agentsData.status === 'success') setAgents(agentsData.agents);
+
+                const jobsData = await fetchWithAuth(`${API_URL}/api/jobs`);
+                if (jobsData && jobsData.status === 'success') setJobs(jobsData.jobs);
+            }
+
+            async function login() {
+                try {
+                    const response = await fetch(`${API_URL}/login`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await response.json();
+                    if (data.status === 'success') {
+                        localStorage.setItem('token', data.token);
+                        setCsrfToken(data.csrf_token);
+                        setIsLoggedIn(true);
+                        setError('');
+                        setUsername('');
+                        setPassword('');
+                    } else {
+                        setError(data.message);
+                    }
+                } catch (err) {
+                    setError('Network error: ' + err.message);
+                }
+            }
+
+            async function logout() {
+                const token = localStorage.getItem('token');
+                try {
+                    await fetch(`${API_URL}/logout`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'X-CSRF-Token': csrfToken
+                        }
+                    });
+                } catch (err) {
+                    console.error('Logout failed:', err);
+                }
+                localStorage.removeItem('token');
+                setIsLoggedIn(false);
+                setCsrfToken('');
+                setHealth(null);
+                setAgents([]);
+                setJobs([]);
+            }
+
+            async function createJob() {
+                const token = localStorage.getItem('token');
+                const newCsrf = await getCsrfToken();
+                try {
+                    const response = await fetch(`${API_URL}/api/jobs`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`,
+                            'X-CSRF-Token': newCsrf
+                        },
+                        body: JSON.stringify({ agent_id: agentId, tool, parameters })
+                    });
+                    const data = await response.json();
+                    if (data.status === 'success') {
+                        setAgentId('');
+                        setTool('');
+                        setParameters({});
+                        setParamKey('');
+                        setParamValue('');
+                        fetchDashboardData();
+                    } else {
+                        setError(data.message);
+                    }
+                } catch (err) {
+                    setError('Error creating job: ' + err.message);
+                }
+            }
+
+            async function cancelJob(jobId) {
+                const token = localStorage.getItem('token');
+                const newCsrf = await getCsrfToken();
+                try {
+                    const response = await fetch(`${API_URL}/api/jobs/${jobId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'X-CSRF-Token': newCsrf
+                        }
+                    });
+                    const data = await response.json();
+                    if (data.status === 'success') {
+                        fetchDashboardData();
+                    } else {
+                        setError(data.message);
+                    }
+                } catch (err) {
+                    setError('Error cancelling job: ' + err.message);
+                }
+            }
+
+            function addParameter() {
+                if (paramKey && paramValue) {
+                    setParameters(prev => ({ ...prev, [paramKey]: paramValue }));
+                    setParamKey('');
+                    setParamValue('');
+                }
+            }
+
+            const styles = {
+                container: { maxWidth: '1000px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif', backgroundColor: '#f4f4f4' },
+                login: { maxWidth: '400px', margin: '100px auto', background: 'white', padding: '20px', borderRadius: '5px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' },
+                header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' },
+                section: { background: 'white', padding: '20px', marginBottom: '20px', borderRadius: '5px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' },
+                button: { padding: '10px 20px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', margin: '5px' },
+                buttonHover: { backgroundColor: '#0056b3' },
+                input: { padding: '8px', margin: '5px', border: '1px solid #ddd', borderRadius: '4px' },
+                error: { color: 'red', margin: '10px 0' },
+                ul: { listStyle: 'none', padding: '0' },
+                li: { padding: '10px', borderBottom: '1px solid #eee' },
+                pre: { background: '#f8f9fa', padding: '10px', borderRadius: '4px' }
+            };
+
+            if (!isLoggedIn) {
+                return (
+                    <div style={styles.login}>
+                        <h1>Login</h1>
+                        <input
+                            style={styles.input}
+                            type="text"
+                            placeholder="Username"
+                            value={username}
+                            onChange={e => setUsername(e.target.value)}
+                        />
+                        <input
+                            style={styles.input}
+                            type="password"
+                            placeholder="Password"
+                            value={password}
+                            onChange={e => setPassword(e.target.value)}
+                        />
+                        <button style={styles.button} onClick={login}>Login</button>
+                        {error && <p style={styles.error}>{error}</p>}
+                    </div>
+                );
+            }
+
+            const token = localStorage.getItem('token');
+            const payload = token ? JSON.parse(atob(token.split('.')[1])) : {};
+            const isAdmin = payload.user === 'admin'; 
+
+            return (
+                <div style={styles.container}>
+                    <header style={styles.header}>
+                        <h1>OSINT Dashboard</h1>
+                        <button style={styles.button} onClick={logout}>Logout</button>
+                    </header>
+
+                    <section style={styles.section}>
+                        <h2>System Health</h2>
+                        <pre style={styles.pre}>{health ? JSON.stringify(health, null, 2) : 'Loading...'}</pre>
+                    </section>
+
+                    <section style={styles.section}>
+                        <h2>Agents</h2>
+                        <ul style={styles.ul}>
+                            {agents.length ? agents.map(agent => <li style={styles.li} key={agent}>{agent}</li>) : <li>Loading...</li>}
+                        </ul>
+                    </section>
+
+                    <section style={styles.section}>
+                        <h2>Jobs</h2>
+                        <div>
+                            <input
+                                style={styles.input}
+                                type="text"
+                                placeholder="Agent ID"
+                                value={agentId}
+                                onChange={e => setAgentId(e.target.value)}
+                            />
+                            <input
+                                style={styles.input}
+                                type="text"
+                                placeholder="Tool Name"
+                                value={tool}
+                                onChange={e => setTool(e.target.value)}
+                            />
+                            <label>Parameters:</label>
+                            <input
+                                style={styles.input}
+                                type="text"
+                                placeholder="Key"
+                                value={paramKey}
+                                onChange={e => setParamKey(e.target.value)}
+                            />
+                            <input
+                                style={styles.input}
+                                type="text"
+                                placeholder="Value"
+                                value={paramValue}
+                                onChange={e => setParamValue(e.target.value)}
+                            />
+                            <button style={styles.button} onClick={addParameter}>Add Parameter</button>
+                            <ul style={styles.ul}>
+                                {Object.entries(parameters).map(([key, value]) => (
+                                    <li style={styles.li} key={key}>{`${key}: ${value}`}</li>
+                                ))}
+                            </ul>
+                            <button style={styles.button} onClick={createJob}>Create Job</button>
+                        </div>
+                        <ul style={styles.ul}>
+                            {jobs.length ? jobs.map(job => (
+                                <li style={styles.li} key={job.id}>
+                                    Job {job.id} - {job.status}
+                                    {isAdmin && <button style={styles.button} onClick={() => cancelJob(job.id)}>Cancel</button>}
+                                </li>
+                            )) : <li>Loading...</li>}
+                        </ul>
+                    </section>
+
+                    {error && <p style={styles.error}>{error}</p>}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
